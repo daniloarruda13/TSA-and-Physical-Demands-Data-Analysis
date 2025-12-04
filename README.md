@@ -4,7 +4,7 @@
 This repository contains the full data analysis workflow and dataset used in the study:
 
 **“Beyond Formations: Team Surface Area and Its Influence on Physical Demands Across Defensive Phases in the 2022 FIFA World Cup.”**  
-Author: **Danilo Arruda**  
+Authors: **Veysel Boge, Alper Tunga Peker, Abdullah Kilci, Muhammed Emin Koc, Danilo Arruda, Bruno Gonçalves**  
 Date: **2025**
 
 ---
