@@ -1,4 +1,4 @@
-# 🏆 TSA and Physical Demands — Data Analysis  
+# TSA and Physical Demands — Data Analysis  
 ### Beyond Formations: Team Surface Area and Its Influence on Physical Demands Across Defensive Phases in the 2022 FIFA World Cup
 
 This repository contains the full data analysis workflow and dataset used in the study:
