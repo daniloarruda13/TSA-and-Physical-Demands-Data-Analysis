@@ -1,0 +1,421 @@
+---
+title: "Beyond Formations: Team Surface Area and Its Influence on Physical Demands Across Defensive Phases in the 2022 FIFA World Cup - Data Analysis"
+author: "Danilo Arruda"
+date: "12/04/2025"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_depth: 5
+    toc_float: true
+    self_contained: true
+knitr:
+  opts_chunk:
+    echo: false
+---
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Load Data and Transform
+## Imports
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(broom)
+library(kableExtra)
+library(rstatix)
+library(lmPerm)
+library(effectsize)
+```
+
+
+# Importing Data and Adding Area
+```{r}
+dataset <- read.csv("data/dataset/tsa_data.csv", sep = ",")
+
+
+# Calculating area
+dataset <- dataset %>%
+  mutate(
+    possession_build_area = possession_build_width * possession_build_height,
+    possession_progression_area = possession_progression_width * possession_progression_height,
+    possession_third_area = possession_third_width * possession_third_height,
+    defensive_high_area = defensive_high_width * defensive_high_height,
+    defensive_mid_area = defensive_mid_width * defensive_mid_height,
+    defensive_low_area = defensive_low_width * defensive_low_height)
+```
+
+
+
+## Descriptive Analysis
+
+### Summary Statistics For Physical Metrics
+```{r}
+dataset %>%
+select(system, total_distance, zone_1, zone_2, zone_3, zone_4, zone_5, sprints, top_speed, high_speed_runs) %>%
+group_by(system) %>%
+summarise(across(everything(), list(mean = mean, sd = sd), na.rm = TRUE)) %>%
+kable() %>% kable_styling(full_width = FALSE)
+
+```
+### Distribution Plots
+```{r}
+dependent_vars <- c("total_distance", "zone_5", "zone_4", 
+                    "high_speed_runs", "sprints", "top_speed")
+
+for (dv in dependent_vars) {
+
+  p <- ggplot(dataset, aes_string(x = dv, fill = "as.factor(system)")) +
+    geom_density(alpha = 0.4) +
+    theme_minimal() +
+    labs(
+      title = paste("Distribution of", gsub("_", " ", dv), "by System"),
+      x = gsub("_", " ", dv),
+      fill = "System"
+    )
+
+  print(p)
+}
+
+```
+
+
+## Statistical Analysis
+
+### Normality Tests (Shapiro–Wilk)
+
+```{r}
+dataset %>%
+group_by(system) %>%
+summarise(
+total_distance    = shapiro.test(total_distance)$p.value,
+zone_1            = shapiro.test(zone_1)$p.value,
+zone_2            = shapiro.test(zone_2)$p.value,
+zone_3            = shapiro.test(zone_3)$p.value,
+zone_4            = shapiro.test(zone_4)$p.value,
+zone_5            = shapiro.test(zone_5)$p.value,
+sprints           = shapiro.test(sprints)$p.value,
+top_speed         = shapiro.test(top_speed)$p.value,
+high_speed_runs   = shapiro.test(high_speed_runs)$p.value
+) %>%
+kable() %>% kable_styling(full_width = FALSE)
+
+```
+Most variables violated normality → proceed with Permutation ANOVA (non-parametric).
+
+## Permutation ANOVAs & Post-Hoc Slope Tests
+### Helper function
+```{r}
+Rcpp::cppFunction('
+#include <Rcpp.h>
+using namespace Rcpp;
+
+// [[Rcpp::export]]
+NumericVector permuted_slopes_diff(NumericVector x, NumericVector y, IntegerVector group, int B) {
+  int n = x.size();
+  NumericVector results(B);
+  IntegerVector g = clone(group);  // clone for shuffling
+
+  for (int b = 0; b < B; b++) {
+    std::random_shuffle(g.begin(), g.end());
+
+    // initialize sums for both groups
+    double sum_x1 = 0, sum_y1 = 0, sum_xx1 = 0, sum_xy1 = 0;
+    double sum_x2 = 0, sum_y2 = 0, sum_xx2 = 0, sum_xy2 = 0;
+    int n1 = 0, n2 = 0;
+
+    for (int i = 0; i < n; i++) {
+      if (g[i] == 1) {
+        sum_x1 += x[i];
+        sum_y1 += y[i];
+        sum_xx1 += x[i] * x[i];
+        sum_xy1 += x[i] * y[i];
+        n1++;
+      } else {
+        sum_x2 += x[i];
+        sum_y2 += y[i];
+        sum_xx2 += x[i] * x[i];
+        sum_xy2 += x[i] * y[i];
+        n2++;
+      }
+    }
+
+    double denom1 = (n1 * sum_xx1 - sum_x1 * sum_x1);
+    double denom2 = (n2 * sum_xx2 - sum_x2 * sum_x2);
+
+    double slope1 = NA_REAL;
+    double slope2 = NA_REAL;
+
+    if (denom1 != 0) {
+      slope1 = (n1 * sum_xy1 - sum_x1 * sum_y1) / denom1;
+    }
+    if (denom2 != 0) {
+      slope2 = (n2 * sum_xy2 - sum_x2 * sum_y2) / denom2;
+    }
+
+    results[b] = slope1 - slope2;
+  }
+
+  return results;
+}
+')
+
+
+```
+
+
+```{r}
+# ----------------------------------------------------------
+# Utility: Pretty labels
+# ----------------------------------------------------------
+pretty_label <- function(x) {
+  x %>%
+    str_replace_all("_", " ") %>%
+    str_trim() %>%
+    str_to_sentence()
+}
+
+# ----------------------------------------------------------
+# Variables
+# ----------------------------------------------------------
+independent_vars <- c(
+  "defensive_high_area", "defensive_mid_area", "defensive_low_area",
+  "possession_build_area", "possession_progression_area", "possession_third_area"
+)
+
+dependent_vars <- c("total_distance", "zone_5", "zone_4", "high_speed_runs", "sprints", "top_speed")
+
+dataset$system <- as.factor(dataset$system)
+
+# ----------------------------------------------------------
+# Storage
+# ----------------------------------------------------------
+perm_pvalues <- list()
+slope_tables <- list()
+pairwise_perm_results <- list()
+effect_sizes <- list()
+
+# ----------------------------------------------------------
+# MAIN LOOP
+# ----------------------------------------------------------
+for (DV in dependent_vars) {
+  for (IV in independent_vars) {
+    
+    # Ensure numeric predictors
+    if (!is.numeric(dataset[[IV]])) {
+      dataset[[IV]] <- as.numeric(as.character(dataset[[IV]]))
+    }
+
+    formula <- as.formula(paste(DV, "~", IV, "* system"))
+    model_name <- paste(DV, "by", IV, "and system")
+
+    result <- tryCatch({
+
+      # ------------------------------------------------------
+      # 1) Permutation ANOVA
+      # ------------------------------------------------------
+      perm_anova <- aovp(formula, data = dataset, perm = "Prob", maxIter = 10000)
+      model_summary <- summary(perm_anova)
+
+      anova_tbl <- data.frame(
+        Source   = rownames(model_summary[[1]]),
+        SS       = model_summary[[1]][, 2],
+        Df       = model_summary[[1]][, 1],
+        MS       = model_summary[[1]][, 3],
+        F_value  = model_summary[[1]]$`R Mean Sq` / model_summary[[1]]$`R Mean Sq`[nrow(model_summary[[1]])],
+        Prob     = model_summary[[1]][, 5]
+      )
+
+      # Partial eta squared
+      ss_res <- model_summary[[1]]$`R Sum Sq`[nrow(model_summary[[1]])]
+      partial_eta <- model_summary[[1]]$`R Sum Sq` / (model_summary[[1]]$`R Sum Sq` + ss_res)
+      partial_eta[nrow(model_summary[[1]])] <- NA
+
+      anova_tbl$Partial_Eta2 <- partial_eta
+
+      perm_pvalues[[model_name]] <- anova_tbl
+      effect_sizes[[model_name]] <- anova_tbl %>% select(Source, Partial_Eta2)
+anova_tbl
+      # ------------------------------------------------------
+      # 2) Regression slopes per system
+      # ------------------------------------------------------
+      slope_tbl <- dataset %>%
+        filter(!is.na(.data[[IV]]), !is.na(.data[[DV]]), !is.na(system)) %>%
+        group_by(system) %>%
+        do({
+          model <- lm(as.formula(paste(DV, "~", IV)), data = .)
+          slope_info <- tidy(model) %>% filter(term == IV)
+          rsq <- glance(model)$r.squared
+          f2 <- rsq / (1 - rsq)
+
+          data.frame(
+            Slope     = slope_info$estimate,
+            R_squared = rsq,
+            f2        = f2,
+            p_value   = slope_info$p.value
+          )
+        }) %>%
+        ungroup()
+
+      slope_tables[[model_name]] <- slope_tbl
+
+      # ------------------------------------------------------
+      # 3) Pairwise permutation slope comparisons
+      # ------------------------------------------------------
+      interaction_p <- anova_tbl %>%
+        filter(Source == paste(IV, ":system", sep = "")) %>%
+        pull(Prob)
+
+      if (length(interaction_p) > 0 && interaction_p < 0.05) {
+        
+        systems <- unique(dataset$system)
+        pairs <- combn(systems, 2, simplify = FALSE)
+
+        pairwise_results <- do.call(rbind, lapply(pairs, function(pair) {
+
+          d_subset <- dataset %>%
+            filter(system %in% pair, !is.na(.data[[DV]]), !is.na(.data[[IV]]))
+
+          if (nrow(d_subset) < 5) return(NULL)
+
+          group_bin <- ifelse(d_subset$system == pair[1], 1L, 0L)
+          x <- d_subset[[IV]]
+          y <- d_subset[[DV]]
+
+          keep <- complete.cases(x, y, group_bin)
+          x <- x[keep]; y <- y[keep]; group_bin <- group_bin[keep]
+
+          if (length(unique(group_bin)) < 2 || length(x) < 5) return(NULL)
+
+          lm1 <- lm(y ~ x, subset = group_bin == 1)
+          lm2 <- lm(y ~ x, subset = group_bin == 0)
+
+          s1 <- coef(lm1)[2]
+          s2 <- coef(lm2)[2]
+          slope_diff <- s1 - s2
+
+          null_dist <- permuted_slopes_diff(x, y, group_bin, 10000)
+          p_val <- mean(abs(null_dist) >= abs(slope_diff))
+
+          # Standardized slope difference
+          effect_size <- slope_diff / sd(null_dist)
+
+          data.frame(
+            system_1   = pair[1],
+            system_2   = pair[2],
+            Slope_1    = s1,
+            Slope_2    = s2,
+            Slope_Diff = slope_diff,
+            P_value    = p_val,
+            Effect_Size = effect_size,
+            Significant = p_val < 0.05
+          )
+        }))
+
+        pairwise_perm_results[[model_name]] <- pairwise_results
+
+      } else {
+        pairwise_perm_results[[model_name]] <- NULL
+      }
+      
+    }, error = function(e) {
+      warning(paste("Error in model for", DV, "and", IV, ":", e$message))
+      return(NULL)
+    })
+  }
+}
+
+# ----------------------------------------------------------
+# MERGE RESULTS
+# ----------------------------------------------------------
+all_perm_pvalues <- bind_rows(lapply(names(perm_pvalues), function(nm) {
+  df <- perm_pvalues[[nm]]
+  df$Model <- nm
+  df
+}))
+
+all_slopes <- bind_rows(lapply(names(slope_tables), function(nm) {
+  df <- slope_tables[[nm]]
+  df$Model <- nm
+  df
+}))
+
+all_effect_sizes <- bind_rows(lapply(names(effect_sizes), function(nm) {
+  df <- effect_sizes[[nm]]
+  df$Model <- nm
+  df
+}))
+
+all_pairwise_perm <- bind_rows(lapply(names(pairwise_perm_results), function(nm) {
+  df <- pairwise_perm_results[[nm]]
+  if (is.data.frame(df)) {
+    df$Model <- nm
+    df
+  }
+}))
+
+
+
+```
+
+### Merge and Export Results
+```{r}
+# ----------------------------------------------------------
+# SAVE OUTPUT
+# ----------------------------------------------------------
+write.csv(all_perm_pvalues, "permutation_anova_results.csv", row.names = FALSE)
+write.csv(all_slopes, "regression_slopes_results.csv", row.names = FALSE)
+write.csv(all_pairwise_perm, "pairwise_permutation_effect_sizes.csv", row.names = FALSE)
+
+```
+
+
+---
+
+# Table with the results
+## Permutation Anova
+```{r}
+library(DT)
+datatable(all_perm_pvalues, 
+          caption = "Permutation ANOVA Results",
+          filter = "top",
+          rownames = FALSE,
+          options = list(pageLength = 10))
+
+```
+
+
+## Regression Slopes
+```{r}
+datatable(
+  all_slopes,
+  caption = "Regression Slopes by System",
+  filter = "top",
+  rownames = FALSE,
+  options = list(
+    pageLength = 10,
+    autoWidth = TRUE,
+    scrollX = TRUE
+  )
+)
+```
+
+
+## Pairwise Comparison
+```{r}
+datatable(
+  all_pairwise_perm,
+  caption = "Pairwise Permutation Slope Comparisons",
+  filter = "top",
+  rownames = FALSE,
+  options = list(
+    pageLength = 10,
+    autoWidth = TRUE,
+    scrollX = TRUE
+  )
+)
+```
+
